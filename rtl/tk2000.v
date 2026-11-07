@@ -82,6 +82,15 @@ module tk2000 (
     input wire cas_i,
     output cas_o,
     output [1:0] cas_motor_o,
+    output cpu_ce_o,                       // CPU clock enable (1.0227 MHz, 7x in turbo), tape timebase
+    output cpu_sync_o,                     // opcode fetch cycle (with cpu_addr_o)
+    output [15:0] cpu_addr_o,
+    input wire turbo_i,                    // run the CPU at 7x (2 x 14.318 MHz clocks per cycle)
+    output turbo_o,                        // turbo actually active
+    // Video reads RAM on its own port, so the CPU can run faster than the
+    // video timing while turbo is on.
+    output [15:0] video_ram_addr_o,
+    input wire [7:0] video_ram_data_i,
     // LPT
     output lpt_stb_o,
     input wire lpt_busy_i,
@@ -173,12 +182,28 @@ module tk2000 (
         .R_W_n      (r_w_n),
         .A          (cpu_addr_s),
         .DI         (cpu_di_s),
-        .DO         (cpu_dout_s)
+        .DO         (cpu_dout_s),
+        .Sync       (cpu_sync_s)
     );
 
     assign cpu_we_s = !r_w_n;
 
-    assign CPU_EN = (PHASE_ZERO_D == 1'b1 && t_phi0_s == 1'b0) ? 1'b1 : 1'b0;
+    // Normal speed: one CPU cycle per PHI0 (14 clocks of 14.318 MHz).
+    // Turbo (7x): one CPU cycle every 2 clocks. The mode only changes on a
+    // CPU cycle boundary, and a cycle is never shorter than 2 clocks.
+    wire NORMAL_EN = (PHASE_ZERO_D == 1'b1 && t_phi0_s == 1'b0) ? 1'b1 : 1'b0;
+    reg  turbo_act = 1'b0;
+    reg  cyc_ok = 1'b0;          // at least 2 clocks since the last CPU cycle
+    always @(posedge clock_14_i) begin
+        cyc_ok <= !CPU_EN;
+        if (CPU_EN) turbo_act <= turbo_i;
+    end
+    assign CPU_EN = cyc_ok && (turbo_act ? 1'b1 : NORMAL_EN);
+    assign cpu_ce_o = CPU_EN && !CPU_WAIT;
+    assign turbo_o = turbo_act;
+    wire cpu_sync_s;
+    assign cpu_sync_o = cpu_sync_s;
+    assign cpu_addr_o = cpu_addr_s[15:0];
 
     always @(posedge clock_14_i) begin
         PHASE_ZERO_D <= t_phi0_s;
@@ -236,23 +261,24 @@ module tk2000 (
     assign rom_oe_o = (rom_cs_s == 1'b1 && t_phi1_s == 1'b0 && cpu_we_s == 1'b0 && clock_q3_s == 1'b0) ? 1'b1 : 1'b0;
     assign rom_we_o = (rom_cs_s == 1'b1 && t_phi1_s == 1'b0 && cpu_we_s == 1'b1 && clock_q3_s == 1'b0) ? 1'b1 : 1'b0;
 
-    // RAM Address
-    always @(cpu_addr_s or t_phi1_s or video_addr_s) begin
-        if (t_phi1_s == 1'b1) begin
-            ram_addr_o = video_addr_s;
-        end else begin
-            ram_addr_o = cpu_addr_s[15:0];
-        end
+    // RAM: the CPU owns port A; the video reads through its own port
+    // (video_ram_addr_o / video_ram_data_i), at the same times as before.
+    always @(cpu_addr_s) begin
+        ram_addr_o = cpu_addr_s[15:0];
     end
+    assign video_ram_addr_o = video_addr_s;
 
-    assign ram_oe_o = (((ram_cs_s == 1'b1 && t_phi1_s == 1'b0 && cpu_we_s == 1'b0) || t_phi1_s == 1'b1)) && clock_q3_s == 1'b0 ? 1'b1 : 1'b0;
-    assign ram_we_o = (ram_cs_s == 1'b1 && t_phi1_s == 1'b0 && cpu_we_s == 1'b1) && clock_q3_s == 1'b0 ? 1'b1 : 1'b0;
+    assign ram_oe_o = (ram_cs_s == 1'b1 && cpu_we_s == 1'b0) ? 1'b1 : 1'b0;
+    // Normal speed writes in PHI0 as on the real board; in turbo the whole
+    // (2-clock) CPU cycle is the write window.
+    assign ram_we_o = (ram_cs_s == 1'b1 && cpu_we_s == 1'b1) &&
+                      (turbo_act || (t_phi1_s == 1'b0 && clock_q3_s == 1'b0)) ? 1'b1 : 1'b0;
 
     // Latch video RAM data on the rising edge of RAS
     always @(posedge clock_14_i) begin
         if (t_ax_s == 1'b1 && t_cas_n_s == 1'b1 && t_ras_n_s == 1'b1) begin
             if (t_phi1_s == 1'b1) begin
-                video_d_latch_s <= ram_data_from_i;
+                video_d_latch_s <= video_ram_data_i;
             end
         end
     end
@@ -397,7 +423,7 @@ module tk2000 (
         if (reset_i == 1'b1) begin
             kbd_rows_o <= 8'b00000000;
         end else begin
-            if (kbd_o_cs_s == 1'b1 && t_phi0_s == 1'b1) begin
+            if (kbd_o_cs_s == 1'b1 && cpu_ce_o == 1'b1) begin
                 kbd_rows_o <= cpu_dout_s;
             end
         end
@@ -408,7 +434,7 @@ module tk2000 (
         if (reset_i == 1'b1) begin
             softswitches_s <= 8'b00000000;
         end else begin
-            if (t_phi0_s == 1'b1 && softswitch_cs_s == 1'b1) begin
+            if (cpu_ce_o == 1'b1 && softswitch_cs_s == 1'b1) begin
                 softswitches_s[cpu_addr_s[3:1]] <= cpu_addr_s[0];
             end
         end
@@ -433,7 +459,7 @@ module tk2000 (
 
     // Speaker
     always @(posedge clock_14_i) begin
-        if (t_phi0_s == 1'b1 && speaker_cs_s == 1'b1) begin
+        if (cpu_ce_o == 1'b1 && speaker_cs_s == 1'b1) begin
             speaker_s <= !speaker_s;
         end
     end
@@ -441,7 +467,7 @@ module tk2000 (
 
     // Cassette
     always @(posedge clock_14_i) begin
-        if (t_phi0_s == 1'b1 && cas_o_cs_s == 1'b1) begin
+        if (cpu_ce_o == 1'b1 && cas_o_cs_s == 1'b1) begin
             cas_o_s <= !cas_o_s;
         end
     end

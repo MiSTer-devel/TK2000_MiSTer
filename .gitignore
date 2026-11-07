@@ -39,3 +39,9 @@ c5_pin_model_dump.txt
 *.cdf
 *obj_dir*
 *vinc*
+
+# Local reference material and software images (not redistributed)
+refs/
+software/
+verilator/library_results/
+verilator/tools/nibtool

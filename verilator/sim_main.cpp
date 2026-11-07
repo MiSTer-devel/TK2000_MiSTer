@@ -1,5 +1,6 @@
 #include <verilated.h>
 #include "Vemu.h"
+#include "Vemu___024root.h"
 
 #include "imgui.h"
 #include "implot.h"
@@ -19,6 +20,11 @@
 #include "sim_audio.h"
 #include "sim_input.h"
 #include "sim_clock.h"
+#define STB_IMAGE_WRITE_IMPLEMENTATION
+#include "stb_image_write.h"
+#include <vector>
+#include <algorithm>
+#include <map>
 
 #define FMT_HEADER_ONLY
 #include <fmt/core.h>
@@ -59,6 +65,11 @@ int multi_step_amount = 1024;
 
 bool stop_on_log_mismatch = 1;
 bool debug_6502 = 1;
+bool cpu_log = false;
+int watch_lo = -1, watch_hi = -1;   // --watch: log RAM writes in this range
+int watch_from = 0;                 // --watch-from: first frame to log
+unsigned int last_fetch_pc = 0;      // per-instruction log to the debug console (slow)
+bool headless = false;
 int cpu_sync;
 long cpu_instruction_count;
 int cpu_clock;
@@ -109,8 +120,8 @@ const int input_menu = 12;
 
 // Video
 // -----
-#define VGA_WIDTH 320
-#define VGA_HEIGHT 240
+#define VGA_WIDTH 284
+#define VGA_HEIGHT 192
 #define VGA_ROTATE 0  // 90 degrees anti-clockwise
 #define VGA_SCALE_X vga_scale
 #define VGA_SCALE_Y vga_scale
@@ -190,6 +201,7 @@ long log_index;
 bool writeLog(const char* line)
 {
 		// Write to cpu log
+		if (headless) { printf("%s\n", line); return true; }
 		log_cpu.push_back(line);
 		std::string c_line = std::string(line);
 		std::string c = "%6d  CPU > " + c_line;
@@ -661,8 +673,6 @@ int verilate() {
 		}
 		if (soft_reset_time==initialReset) {
 			top->soft_reset = 0; 
-			fprintf(stderr,"turning off %x\n",top->soft_reset);
-			fprintf(stderr,"soft_reset_time %ld initialReset %x\n",soft_reset_time,initialReset);
 		} 
 
 		// Assert reset during startup
@@ -683,81 +693,42 @@ int verilate() {
 				input.BeforeEval();
 				bus.BeforeEval();
 			}
+			// 6502 trace: sample the CPU state just before the rising clock edge
+			// on which an opcode-fetch cycle (MCycle 0) completes.
+			bool trace_edge = false;
+			unsigned int t_pc = 0, t_op = 0, t_a = 0, t_x = 0, t_y = 0, t_s = 0, t_p = 0;
+			if (watch_lo >= 0 && clk_sys.clk && VERTOPINTERN->emu__DOT__tk2000__DOT__cpu6502__DOT__Enable &&
+			    VERTOPINTERN->emu__DOT__tk2000__DOT__cpu6502__DOT__MCycle == 0)
+				last_fetch_pc = VERTOPINTERN->emu__DOT__tk2000__DOT__cpu6502__DOT__A & 0xFFFF;
+			if (watch_lo >= 0 && clk_sys.clk && VERTOPINTERN->emu__DOT__ram_we) {
+				static int last_wa = -1, last_wd = -1;
+				int wa = VERTOPINTERN->emu__DOT__ram_addr, wd = VERTOPINTERN->emu__DOT__ram_data;
+				if (video.count_frame >= watch_from && wa >= watch_lo && wa <= watch_hi && (wa != last_wa || wd != last_wd))
+					printf("WATCH F%05d PC~%04X write %04X = %02X\n", video.count_frame, last_fetch_pc, wa, wd);
+				last_wa = wa; last_wd = wd;
+			}
+			if (cpu_log && clk_sys.clk && !top->reset &&
+			    VERTOPINTERN->emu__DOT__tk2000__DOT__cpu6502__DOT__Enable &&
+			    VERTOPINTERN->emu__DOT__tk2000__DOT__cpu6502__DOT__MCycle == 0) {
+				trace_edge = true;
+				t_pc = VERTOPINTERN->emu__DOT__tk2000__DOT__cpu6502__DOT__A & 0xFFFF;
+				t_op = VERTOPINTERN->emu__DOT__tk2000__DOT__cpu6502__DOT__DI;
+				t_a = VERTOPINTERN->emu__DOT__tk2000__DOT__cpu6502__DOT__ABC & 0xFF;
+				t_x = VERTOPINTERN->emu__DOT__tk2000__DOT__cpu6502__DOT__X & 0xFF;
+				t_y = VERTOPINTERN->emu__DOT__tk2000__DOT__cpu6502__DOT__Y & 0xFF;
+				t_s = VERTOPINTERN->emu__DOT__tk2000__DOT__cpu6502__DOT__S & 0xFF;
+				t_p = VERTOPINTERN->emu__DOT__tk2000__DOT__cpu6502__DOT__P;
+			}
 			top->eval();
-
-			// Log 6502 instructions
-			cpu_clock = VERTOPINTERN->emu__DOT__tk2000__DOT__cpu6502__DOT__Clk;
-			bool cpu_reset = top->reset;
-			if (cpu_clock != cpu_clock_last && cpu_reset == 0) {
-
-
-				unsigned char en = VERTOPINTERN->emu__DOT__tk2000__DOT__cpu6502__DOT__Enable;
-				if (en) {
-
-
-			// AJS - put debugger here
-			unsigned char vpa = VERTOPINTERN->emu__DOT__tk2000__DOT__cpu6502__DOT__VPA;
-			unsigned char vda = VERTOPINTERN->emu__DOT__tk2000__DOT__cpu6502__DOT__VDA;
-			//unsigned char vpb = VERTOPINTERN->emu__DOT__top__DOT__core__DOT__cpu__DOT__VPB;
-			unsigned char din = VERTOPINTERN->emu__DOT__tk2000__DOT__cpu6502__DOT__DI;
-			unsigned long addr = VERTOPINTERN->emu__DOT__tk2000__DOT__cpu6502__DOT__A;
-			unsigned char nextstate = VERTOPINTERN->emu__DOT__tk2000__DOT__cpu6502__DOT__MCycle;
-		if (VERTOPINTERN->emu__DOT__tk2000__DOT__cpu6502__DOT__Enable)
-		{	
-			if (vpa && nextstate == 1) {
-	
-			if (ins_index > 0 && ins_pc[0] > 0) {
-				DumpInstruction();
+			if (trace_edge) {
+				char line[96];
+				snprintf(line, sizeof(line), "F%05d %04X: %02X  A=%02X X=%02X Y=%02X S=%02X P=%02X",
+				         video.count_frame, t_pc, t_op, t_a, t_x, t_y, t_s, t_p);
+				if (headless) printf("%s\n", line); else console.AddLog(line);
+				cpu_instruction_count++;
 			}
-			// Clear instruction cache
-			ins_index = 0;
-			for (int i = 0; i < ins_size; i++) {
-				ins_in[i] = 0;
-				ins_ma[i] = 0;
-				ins_formatted[i] = false;
-			}
-
-			std::string log = fmt::format("{0:06d} > ", cpu_instruction_count);
-			log.append(fmt::format("PC={0:04x} ", VERTOPINTERN->emu__DOT__tk2000__DOT__cpu6502__DOT__PC));
-			log.append(fmt::format("A={0:04x} ", VERTOPINTERN->emu__DOT__tk2000__DOT__cpu6502__DOT__ABC));
-			log.append(fmt::format("X={0:04x} ", VERTOPINTERN->emu__DOT__tk2000__DOT__cpu6502__DOT__X));
-			log.append(fmt::format("Y={0:04x} ", VERTOPINTERN->emu__DOT__tk2000__DOT__cpu6502__DOT__Y));
-
-			//log.append(fmt::format("M={0:x} ", VERTOPINTERN->emu__DOT__top__DOT__core__DOT__cpu__DOT__MF));
-			//log.append(fmt::format("E={0:x} ", VERTOPINTERN->emu__DOT__top__DOT__core__DOT__cpu__DOT__EF));
-			//log.append(fmt::format("D={0:04x} ", VERTOPINTERN->emu__DOT__top__DOT__core__DOT__cpu__DOT__D));
-			
-			//ImGui::Text("D       0x%04X", VERTOPINTERN->emu__DOT__top__DOT__core__DOT__cpu__DOT__D);
-			//ImGui::Text("SP      0x%04X", VERTOPINTERN->emu__DOT__top__DOT__core__DOT__cpu__DOT__SP);
-			//ImGui::Text("DBR     0x%02X", VERTOPINTERN->emu__DOT__top__DOT__core__DOT__cpu__DOT__DBR);
-			//ImGui::Text("PBR     0x%02X", VERTOPINTERN->emu__DOT__top__DOT__core__DOT__cpu__DOT__PBR);
-			//ImGui::Text("PC      0x%04X", VERTOPINTERN->emu__DOT__top__DOT__core__DOT__cpu__DOT__PC);
-			//if (0x011B==VERTOPINTERN->emu__DOT__top__DOT__core__DOT__cpu__DOT__PC)
-			//	log.append(fmt::format("D={0:04x} ", VERTOPINTERN->emu__DOT__top__DOT__core__DOT__cpu__DOT__SP));
-
-			console.AddLog(log.c_str());
-			}
-					if ((vpa || vda) && !(vpa == 0 && vda == 1)) {
-						ins_pc[ins_index] = VERTOPINTERN->emu__DOT__tk2000__DOT__cpu6502__DOT__PC;
-						if (ins_pc[ins_index] > 0) {
-							ins_in[ins_index] = din;
-							ins_ma[ins_index] = addr;
-							ins_dbr[ins_index] = VERTOPINTERN->emu__DOT__tk2000__DOT__cpu6502__DOT__DBR;
-							//console.AddLog(fmt::format("! PC={0:06x} IN={1:02x} MA={2:06x} VPA={3:x} VDA={5:x} I={6:x}", ins_pc[ins_index], ins_in[ins_index], ins_ma[ins_index], vpa,  vda, ins_index).c_str());
-					//		printf("PC: %x IN=%x MA=%x VPA=%x VDA=%x I=%x\n",ins_pc[ins_index],ins_in[ins_index], ins_ma[ins_index], vpa,  vda, ins_index);
-							ins_index++;
-							if (ins_index > ins_size - 1) { ins_index = 0; }
-					//		printf("ins_index = %d\n",ins_index);
-						}
-					}
-			}
-
-
-			}
-		}
-			
-
-
+			cpu_clock = 0;
+			cpu_clock_last = cpu_clock;
 			if (clk_sys.clk) { bus.AfterEval(); blockdevice.AfterEval(); }
 		}
 		
@@ -795,26 +766,375 @@ unsigned char mouse_y = 0;
 
 char spinner_toggle = 0;
 
+// ===========================================================================
+// Command line / automation
+// ===========================================================================
+
+struct DiskSwap { int frame; int drive; std::string path; bool done; };
+struct KeyEvent { int frame; unsigned char code; bool ext; bool pressed; };
+struct JoyEvent { int frame; unsigned int mask; };
+
+static std::string opt_floppy[2];
+static int opt_mount_frame[2] = { 0, 0 };
+static std::vector<DiskSwap> opt_swaps;
+static int opt_stop_at_frame = -1;
+static std::vector<int> opt_screenshot_frames;
+static int opt_screenshot_every = 0;
+static std::string opt_screenshot_dir = ".";
+static std::string opt_screenshot_prefix = "frame";
+static std::vector<int> opt_reset_frames;
+static std::vector<KeyEvent> key_events;   // sorted by frame (stable)
+static size_t key_event_pos = 0;
+static int key_gap_cycles = 0;
+static bool ps2_toggle = false;
+static std::vector<JoyEvent> joy_events;
+static unsigned int joy_mask = 0;
+static int opt_key_hold = 3;      // frames a key stays down
+static int opt_key_gap = 3;       // frames between keys
+static bool opt_hash_every_frame = false;
+static int reset_hold = 0;
+static int opt_cpu_log_from = -1;
+static int opt_cpu_log_to = -1;
+static bool floppy_mounted[2] = { false, false };
+static std::string opt_tape;
+static int opt_tape_frame = 0;
+static std::vector<int> opt_tape_rewind, opt_tape_play;
+struct TapeSwap { int frame; std::string path; bool done; };
+static std::vector<TapeSwap> opt_tape_swaps;
+static std::vector<std::pair<int,std::string>> opt_ram_dumps;
+static int tape_pulse = 0;          // cycles left on a rewind/play button pulse
+static bool tape_last_playing = false, tape_last_loaded = false;
+
+static void usage() {
+	printf("TK2000 Verilator sim\n\n");
+	printf("Usage: ./obj_dir/Vemu [options]\n\n");
+	printf("  --headless                    Run without a window (also HEADLESS=1)\n");
+	printf("  --floppy <file>, --disk1 <f>  Insert image in drive 1 (.nib raw, .dsk/.do/.po nibblized like Main_MiSTer)\n");
+	printf("  --disk2 <file>                Insert image in drive 2\n");
+	printf("  --mount-frame <n>             Insert the drive 1 image at frame n instead of power-on\n");
+	printf("  --swap <frame>:<drive>:<file> Swap/insert an image at a frame (drive 1|2; empty file = eject). Repeatable\n");
+	printf("  --no-disk-rom                 OSD 'Disk Rom: Off' (boot to BASIC without trying the drive; use for tapes)\n");
+	printf("  --tape-normal                 OSD Tape speed: Normal (default 7x turbo while the tape plays)\n");
+	printf("  --tape-overlay-off            OSD Tape overlay: Off\n");
+	printf("  --tape <file.ct2>             Load a CT2 tape (OSD Tape slot); it starts when the ROM reads the tape (LOADT)\n");
+	printf("  --tape-frame <n>              Load the tape at frame n (default 0; type LOAD first, then load the tape)\n");
+	printf("  --watch-from <frame>          Only log --watch writes from this frame on\n");
+	printf("  --dump-ram <frame>:<file>     Write the 64 KB main RAM to a file at a frame. Repeatable\n");
+	printf("  --tape-swap <frame>:<file>    Load another tape at a frame (next side / part). Repeatable\n");
+	printf("  --tape-play <n>               Press Tape play/stop at frame n. Repeatable\n");
+	printf("  --tape-rewind <n>             Press Rewind tape (rewind + play) at frame n. Repeatable\n");
+	printf("  --stop-at-frame <n>           Exit after frame n\n");
+	printf("  --screenshot <n[,n...]>       Save PNG at the listed frames\n");
+	printf("  --screenshot-every <n>        Save PNG every n frames\n");
+	printf("  --screenshot-dir <dir>        Directory for PNGs (default .)\n");
+	printf("  --screenshot-prefix <name>    PNG name prefix (default 'frame' -> frame_0300.png)\n");
+	printf("  --send-keys <frame>:<text>    Type text starting at frame. Escapes: \\n Enter, \\b Backspace,\n");
+	printf("                                \\U \\D \\L \\R arrows, \\^X Ctrl+X, \\\\ backslash. Repeatable\n");
+	printf("  --key-hold <frames>           Frames each key is held (default %d)\n", opt_key_hold);
+	printf("  --key-gap <frames>            Frames between keys (default %d)\n", opt_key_gap);
+	printf("  --joy <frame>:<hexmask>       Set joystick bits from frame (0 R,1 L,2 D,3 U,4 btn1,5 btn2). Repeatable\n");
+	printf("  --reset-at-frame <n>          Pulse reset at frame n. Repeatable\n");
+	printf("  --sd-ack-delay <cycles>       SD block latency (default 1200; real HPS is much slower, try 30000+)\n");
+	printf("  --writeback                   Persist floppy writes to the image file (default: in-memory only)\n");
+	printf("  --verbose-disk                Log every SD block transfer\n");
+	printf("  --legacy-main-interleave      Nibblize .dsk with the old (buggy) Main_MiSTer sector layout, for A/B tests\n");
+	printf("  --hash                        Print a framebuffer hash every frame (FBHASH lines)\n");
+	printf("  --cpu-log                     Per-instruction CPU log (debug console; stdout when headless)\n");
+	printf("  --watch <lo[-hi]>             Log RAM writes in a hex address range with frame and approx PC\n");
+	printf("  --cpu-log-from <n>/--cpu-log-to <n>  Limit the CPU log to a frame range\n");
+	printf("  -h, --help                    This help\n");
+}
+
+static unsigned long long fb_hash() {
+	unsigned long long h = 1469598103934665603ULL;
+	if (!output_ptr) return 0;
+	for (int i = 0; i < video.output_width * video.output_height; i++) {
+		h ^= output_ptr[i] & 0xFFFFFF;
+		h *= 1099511628211ULL;
+	}
+	return h;
+}
+
+static void save_screenshot(int frame) {
+	if (!output_ptr) return;
+	char filename[1024];
+	snprintf(filename, sizeof(filename), "%s/%s_%04d.png", opt_screenshot_dir.c_str(), opt_screenshot_prefix.c_str(), frame);
+	int w = video.output_width, h = video.output_height;
+	std::vector<uint8_t> rgb(w * h * 3);
+	for (int i = 0; i < w * h; i++) {
+		uint32_t p = output_ptr[i];
+		rgb[i * 3 + 0] = p & 0xFF;
+		rgb[i * 3 + 1] = (p >> 8) & 0xFF;
+		rgb[i * 3 + 2] = (p >> 16) & 0xFF;
+	}
+	if (stbi_write_png(filename, w, h, 3, rgb.data(), w * 3))
+		printf("SCREENSHOT frame %d %s FBHASH %016llx\n", frame, filename, fb_hash());
+	else
+		printf("ERROR: could not write %s\n", filename);
+}
+
+// ASCII -> PS/2 set-2 scancode (+ whether SHIFT is needed) for the TK2000
+// keyboard.sv mapping (US layout keys; TK2000 BASIC is upper case).
+static bool ascii_to_ps2(char c, unsigned char &code, bool &shift) {
+	static const char *letters = "abcdefghijklmnopqrstuvwxyz";
+	static const unsigned char lcode[26] = { 0x1C,0x32,0x21,0x23,0x24,0x2B,0x34,0x33,0x43,0x3B,0x42,0x4B,0x3A,
+	                                         0x31,0x44,0x4D,0x15,0x2D,0x1B,0x2C,0x3C,0x2A,0x1D,0x22,0x35,0x1A };
+	static const unsigned char dcode[10] = { 0x45,0x16,0x1E,0x26,0x25,0x2E,0x36,0x3D,0x3E,0x46 };
+	shift = false;
+	char l = tolower(c);
+	if (l >= 'a' && l <= 'z') { code = lcode[strchr(letters, l) - letters]; return true; }
+	if (c >= '0' && c <= '9') { code = dcode[c - '0']; return true; }
+	switch (c) {
+	case ' ': code = 0x29; return true;
+	case '\n': case '\r': code = 0x5A; return true;
+	case ',': code = 0x41; return true;
+	case '.': code = 0x49; return true;
+	case '/': code = 0x4A; return true;
+	case ';': code = 0x4C; return true;
+	case ':': code = 0x4C; shift = true; return true;
+	case '-': code = 0x4E; return true;
+	case '=': code = 0x55; return true;
+	case '+': code = 0x55; shift = true; return true;
+	case '\'': code = 0x0E; return true;               // keyboard.sv: ' " on the ` key
+	case '"': code = 0x0E; shift = true; return true;
+	case '!': code = 0x16; shift = true; return true;
+	case '#': code = 0x26; shift = true; return true;
+	case '$': code = 0x25; shift = true; return true;
+	case '%': code = 0x2E; shift = true; return true;
+	case '&': code = 0x3D; shift = true; return true;
+	case '*': code = 0x3E; shift = true; return true;
+	case '(': code = 0x46; shift = true; return true;
+	case ')': code = 0x45; shift = true; return true;
+	case '?': code = 0x4A; shift = true; return true;
+	case '<': code = 0x41; shift = true; return true;
+	case '>': code = 0x49; shift = true; return true;
+	case '@': code = 0x1E; shift = true; return true;
+	}
+	return false;
+}
+
+static void add_key_text(int frame, const std::string &text) {
+	int f = frame;
+	auto push = [&](unsigned char code, bool ext, bool shift, bool ctrl) {
+		if (shift) key_events.push_back({ f, 0x12, false, true });
+		if (ctrl) key_events.push_back({ f, 0x14, false, true });
+		key_events.push_back({ f, code, ext, true });
+		key_events.push_back({ f + opt_key_hold, code, ext, false });
+		if (ctrl) key_events.push_back({ f + opt_key_hold, 0x14, false, false });
+		if (shift) key_events.push_back({ f + opt_key_hold, 0x12, false, false });
+		f += opt_key_hold + opt_key_gap;
+	};
+	for (size_t j = 0; j < text.size(); j++) {
+		char c = text[j];
+		if (c == '\\' && j + 1 < text.size()) {
+			char n = text[++j];
+			if (n == 'n' || n == 'r') { push(0x5A, false, false, false); continue; }
+			if (n == 'b') { push(0x66, false, false, false); continue; }
+			if (n == 'U') { push(0x75, true, false, false); continue; }
+			if (n == 'D') { push(0x72, true, false, false); continue; }
+			if (n == 'L') { push(0x6B, true, false, false); continue; }
+			if (n == 'R') { push(0x74, true, false, false); continue; }
+			if (n == 'e') { push(0x76, false, false, false); continue; }
+			if (n == '^' && j + 1 < text.size()) {
+				unsigned char code; bool shift;
+				if (ascii_to_ps2(text[++j], code, shift)) push(code, false, false, true);
+				continue;
+			}
+			c = n;
+		}
+		unsigned char code; bool shift;
+		if (ascii_to_ps2(c, code, shift)) push(code, false, shift, false);
+		else fprintf(stderr, "WARNING: no TK2000 key for '%c'\n", c);
+	}
+	std::stable_sort(key_events.begin(), key_events.end(),
+	                 [](const KeyEvent &a, const KeyEvent &b) { return a.frame < b.frame; });
+}
+
+// One simulated clock step plus cycle-accurate injection of queued key events.
+static inline void step() {
+	if (key_gap_cycles > 0) key_gap_cycles--;
+	else if (key_event_pos < key_events.size() && key_events[key_event_pos].frame <= video.count_frame) {
+		const KeyEvent &e = key_events[key_event_pos++];
+		ps2_toggle = !ps2_toggle;
+		top->ps2_key = e.code | (e.ext ? 1 << 8 : 0) | (e.pressed ? 1 << 9 : 0) | (ps2_toggle ? 1 << 10 : 0);
+		key_gap_cycles = 20000;
+	}
+	if (tape_pulse > 0 && --tape_pulse == 0) { top->tape_rewind = 0; top->tape_play_toggle = 0; }
+	if (reset_hold > 0) {
+		top->reset = 1;
+		if (--reset_hold == 0) top->reset = 0;
+	}
+	verilate();
+}
+
+static void mount_drive(int drive, const std::string &path) {
+	if (path.empty()) { blockdevice.EjectDisk(drive); floppy_mounted[drive] = false; return; }
+	floppy_mounted[drive] = blockdevice.MountDisk(path, drive);
+}
+
+static void print_stats() {
+	for (int d = 0; d < 2; d++) {
+		if (blockdevice.disk_name[d].empty() && !blockdevice.blocks_read[d]) continue;
+		printf("DISKSTATS drive %d %s blocks_read %ld blocks_written %ld sectors_written_back %ld\n", d + 1,
+		       blockdevice.disk_name[d].c_str(), blockdevice.blocks_read[d], blockdevice.blocks_written[d],
+		       blockdevice.sectors_written_back[d]);
+	}
+}
+
+// Called once per new frame (both GUI and headless).
+static bool on_frame(int frame) {
+	for (int d = 0; d < 2; d++) {
+		if (!opt_floppy[d].empty() && !floppy_mounted[d] && opt_mount_frame[d] >= 0 && frame >= opt_mount_frame[d]) {
+			printf("FRAME %d: insert drive %d %s\n", frame, d + 1, opt_floppy[d].c_str());
+			mount_drive(d, opt_floppy[d]);
+			opt_mount_frame[d] = -1;
+		}
+	}
+	for (auto &s : opt_swaps) {
+		if (!s.done && frame >= s.frame) {
+			printf("FRAME %d: %s drive %d %s\n", frame, s.path.empty() ? "eject" : "swap", s.drive + 1, s.path.c_str());
+			mount_drive(s.drive, s.path);
+			s.done = true;
+		}
+	}
+	if (opt_cpu_log_from >= 0 && frame == opt_cpu_log_from) cpu_log = true;
+	if (opt_cpu_log_to >= 0 && frame == opt_cpu_log_to) cpu_log = false;
+	if (!opt_tape.empty() && opt_tape_frame >= 0 && frame >= opt_tape_frame) {
+		printf("FRAME %d: load tape %s\n", frame, opt_tape.c_str());
+		bus.QueueDownload(opt_tape, 2, true);
+		opt_tape_frame = -1;
+	}
+	for (auto &t : opt_tape_swaps) if (!t.done && frame >= t.frame) {
+		printf("FRAME %d: load tape %s\n", frame, t.path.c_str());
+		bus.QueueDownload(t.path, 2, true);
+		t.done = true;
+	}
+	for (int f : opt_tape_rewind) if (f == frame) { printf("FRAME %d: tape rewind\n", frame); top->tape_rewind = 1; tape_pulse = 64; }
+	for (int f : opt_tape_play) if (f == frame) { printf("FRAME %d: tape play/stop\n", frame); top->tape_play_toggle = 1; tape_pulse = 64; }
+	if (top->tape_loaded_o != tape_last_loaded || top->tape_playing_o != tape_last_playing) {
+		printf("FRAME %d: TAPE loaded=%d playing=%d turbo=%d\n", frame, top->tape_loaded_o, top->tape_playing_o, top->turbo_o);
+		tape_last_loaded = top->tape_loaded_o; tape_last_playing = top->tape_playing_o;
+	}
+	for (auto &j : joy_events) if (j.frame == frame) joy_mask = j.mask;
+	top->joystick_0 = joy_mask;
+	for (int r : opt_reset_frames) if (r == frame) { printf("FRAME %d: reset\n", frame); reset_hold = 2000; }
+
+	for (auto &d : opt_ram_dumps) if (d.first == frame) {
+		FILE *f = fopen(d.second.c_str(), "wb");
+		if (f) {
+			for (int i = 0; i < 65536; i++) fputc(VERTOPINTERN->emu__DOT__ram__DOT__mem[i], f);
+			fclose(f);
+			printf("FRAME %d: RAM dumped to %s\n", frame, d.second.c_str());
+		}
+	}
+	if (opt_hash_every_frame) printf("FBHASH frame %d %016llx\n", frame, fb_hash());
+	bool shot = std::find(opt_screenshot_frames.begin(), opt_screenshot_frames.end(), frame) != opt_screenshot_frames.end();
+	if (opt_screenshot_every > 0 && frame > 0 && frame % opt_screenshot_every == 0) shot = true;
+	if (shot) save_screenshot(frame);
+
+	if (opt_stop_at_frame >= 0 && frame >= opt_stop_at_frame) {
+		printf("STOP at frame %d (sim time %lu)\n", frame, (unsigned long)main_time);
+		print_stats();
+		return false;
+	}
+	return true;
+}
+
+static int parse_args(int argc, char **argv) {
+	const char *eh = getenv("HEADLESS");
+	if (eh && eh[0] && eh[0] != '0') headless = true;
+	for (int i = 1; i < argc; i++) {
+		std::string a = argv[i];
+		auto next = [&](void) -> std::string {
+			if (i + 1 >= argc) { fprintf(stderr, "missing value for %s\n", a.c_str()); exit(2); }
+			return argv[++i];
+		};
+		if (a == "-h" || a == "--help") { usage(); exit(0); }
+		else if (a == "--headless" || a == "--no-gui") headless = true;
+		else if (a == "--floppy" || a == "--disk1" || a == "--disk") opt_floppy[0] = next();
+		else if (a == "--disk2") opt_floppy[1] = next();
+		else if (a == "--mount-frame") opt_mount_frame[0] = atoi(next().c_str());
+		else if (a == "--swap") {
+			std::string v = next();
+			size_t c1 = v.find(':'), c2 = v.find(':', c1 + 1);
+			if (c1 == std::string::npos || c2 == std::string::npos) { fprintf(stderr, "--swap wants frame:drive:file\n"); return 2; }
+			int drive = atoi(v.substr(c1 + 1, c2 - c1 - 1).c_str());
+			if (drive < 1 || drive > 2) { fprintf(stderr, "--swap drive must be 1 or 2\n"); return 2; }
+			opt_swaps.push_back({ atoi(v.substr(0, c1).c_str()), drive - 1, v.substr(c2 + 1), false });
+		}
+		else if (a == "--stop-at-frame") opt_stop_at_frame = atoi(next().c_str());
+		else if (a == "--screenshot" || a == "-screenshot") {
+			std::stringstream ss(next()); std::string t;
+			while (std::getline(ss, t, ',')) if (!t.empty()) opt_screenshot_frames.push_back(atoi(t.c_str()));
+		}
+		else if (a == "--screenshot-every") opt_screenshot_every = atoi(next().c_str());
+		else if (a == "--screenshot-dir") opt_screenshot_dir = next();
+		else if (a == "--screenshot-prefix") opt_screenshot_prefix = next();
+		else if (a == "--key-hold") opt_key_hold = atoi(next().c_str());
+		else if (a == "--key-gap") opt_key_gap = atoi(next().c_str());
+		else if (a == "--send-keys") {
+			std::string v = next();
+			size_t c = v.find(':');
+			if (c == std::string::npos) { fprintf(stderr, "--send-keys wants frame:text\n"); return 2; }
+			add_key_text(atoi(v.substr(0, c).c_str()), v.substr(c + 1));
+		}
+		else if (a == "--joy") {
+			std::string v = next();
+			size_t c = v.find(':');
+			if (c == std::string::npos) { fprintf(stderr, "--joy wants frame:hexmask\n"); return 2; }
+			joy_events.push_back({ atoi(v.substr(0, c).c_str()), (unsigned)strtoul(v.substr(c + 1).c_str(), NULL, 16) });
+		}
+		else if (a == "--reset-at-frame") opt_reset_frames.push_back(atoi(next().c_str()));
+		else if (a == "--sd-ack-delay") blockdevice.sd_ack_delay = atoi(next().c_str());
+		else if (a == "--no-disk-rom") top->disk_rom_off = 1;
+		else if (a == "--tape-normal") top->tape_normal_speed = 1;
+		else if (a == "--tape-overlay-off") top->tape_overlay_off = 1;
+		else if (a == "--tape") { opt_tape = next(); }
+		else if (a == "--tape-frame") opt_tape_frame = atoi(next().c_str());
+		else if (a == "--watch-from") watch_from = atoi(next().c_str());
+		else if (a == "--dump-ram") {
+			std::string v = next(); size_t c = v.find(':');
+			if (c == std::string::npos) { fprintf(stderr, "--dump-ram wants frame:file\n"); return 2; }
+			opt_ram_dumps.push_back({ atoi(v.substr(0, c).c_str()), v.substr(c + 1) });
+		}
+		else if (a == "--tape-swap") {
+			std::string v = next(); size_t c = v.find(':');
+			if (c == std::string::npos) { fprintf(stderr, "--tape-swap wants frame:file\n"); return 2; }
+			opt_tape_swaps.push_back({ atoi(v.substr(0, c).c_str()), v.substr(c + 1), false });
+		}
+		else if (a == "--tape-rewind") opt_tape_rewind.push_back(atoi(next().c_str()));
+		else if (a == "--tape-play") opt_tape_play.push_back(atoi(next().c_str()));
+		else if (a == "--writeback") blockdevice.writeback = true;
+		else if (a == "--verbose-disk") blockdevice.verbose = true;
+		else if (a == "--legacy-main-interleave") blockdevice.legacy_interleave = true;
+		else if (a == "--hash") opt_hash_every_frame = true;
+		else if (a == "--cpu-log") cpu_log = true;
+		else if (a == "--cpu-log-from") opt_cpu_log_from = atoi(next().c_str());
+		else if (a == "--cpu-log-to") opt_cpu_log_to = atoi(next().c_str());
+		else if (a == "--watch") {
+			std::string v = next(); size_t d = v.find('-');
+			watch_lo = strtol(v.substr(0, d).c_str(), NULL, 16);
+			watch_hi = d == std::string::npos ? watch_lo : strtol(v.substr(d + 1).c_str(), NULL, 16);
+		}
+		else { fprintf(stderr, "unknown option %s (try --help)\n", a.c_str()); return 2; }
+	}
+	return 0;
+}
+
 int main(int argc, char** argv, char** env) {
 
 	// Create core and initialise
 	top = new Vemu();
 	Verilated::commandArgs(argc, argv);
-
-#ifdef WIN32
-	// Attach debug console to the verilated code
-	Verilated::setDebug(console);
-#endif
+	if (int r = parse_args(argc, argv)) return r;
 
 	// Attach bus
 	bus.ioctl_addr = &top->ioctl_addr;
 	bus.ioctl_index = &top->ioctl_index;
 	bus.ioctl_wait = &top->ioctl_wait;
 	bus.ioctl_download = &top->ioctl_download;
-	//bus.ioctl_upload = &top->ioctl_upload;
 	bus.ioctl_wr = &top->ioctl_wr;
 	bus.ioctl_dout = &top->ioctl_dout;
-	//bus.ioctl_din = &top->ioctl_din;
 	input.ps2_key = &top->ps2_key;
 
 	// hookup blk device
@@ -834,65 +1154,60 @@ int main(int argc, char** argv, char** env) {
 	blockdevice.img_readonly= &top->img_readonly;
 	blockdevice.img_size= &top->img_size;
 
-	send_clock();
+	top->paddle_0 = 128;
 
-#ifndef DISABLE_AUDIO
-	audio.Initialise();
-#endif
-
-	// Set up input module
-	input.Initialise();
-#ifdef WIN32
-	input.SetMapping(input_up, DIK_UP);
-	input.SetMapping(input_right, DIK_RIGHT);
-	input.SetMapping(input_down, DIK_DOWN);
-	input.SetMapping(input_left, DIK_LEFT);
-	input.SetMapping(input_a, DIK_Z); // A
-	input.SetMapping(input_b, DIK_X); // B
-	input.SetMapping(input_x, DIK_A); // X
-	input.SetMapping(input_y, DIK_S); // Y
-	input.SetMapping(input_l, DIK_Q); // L
-	input.SetMapping(input_r, DIK_W); // R
-	input.SetMapping(input_select, DIK_1); // Select
-	input.SetMapping(input_start, DIK_2); // Start
-	input.SetMapping(input_menu, DIK_M); // System menu trigger
-
-#else
-	input.SetMapping(input_up, SDL_SCANCODE_UP);
-	input.SetMapping(input_right, SDL_SCANCODE_RIGHT);
-	input.SetMapping(input_down, SDL_SCANCODE_DOWN);
-	input.SetMapping(input_left, SDL_SCANCODE_LEFT);
-	input.SetMapping(input_a, SDL_SCANCODE_A);
-	input.SetMapping(input_b, SDL_SCANCODE_B);
-	input.SetMapping(input_x, SDL_SCANCODE_X);
-	input.SetMapping(input_y, SDL_SCANCODE_Y);
-	input.SetMapping(input_l, SDL_SCANCODE_L);
-	input.SetMapping(input_r, SDL_SCANCODE_E);
-	input.SetMapping(input_start, SDL_SCANCODE_1);
-	input.SetMapping(input_select, SDL_SCANCODE_2);
-	input.SetMapping(input_menu, SDL_SCANCODE_M);
-#endif
-	// Setup video output
+	// Setup video output (allocates the framebuffer; no window when headless)
 	if (video.Initialise(windowTitle) == 1) { return 1; }
 
+	if (!headless) {
+		send_clock();
+#ifndef DISABLE_AUDIO
+		audio.Initialise();
+#endif
+		input.Initialise();
+		input.SetMapping(input_up, SDL_SCANCODE_UP);
+		input.SetMapping(input_right, SDL_SCANCODE_RIGHT);
+		input.SetMapping(input_down, SDL_SCANCODE_DOWN);
+		input.SetMapping(input_left, SDL_SCANCODE_LEFT);
+		input.SetMapping(input_a, SDL_SCANCODE_A);
+		input.SetMapping(input_b, SDL_SCANCODE_B);
+		input.SetMapping(input_x, SDL_SCANCODE_X);
+		input.SetMapping(input_y, SDL_SCANCODE_Y);
+		input.SetMapping(input_l, SDL_SCANCODE_L);
+		input.SetMapping(input_r, SDL_SCANCODE_E);
+		input.SetMapping(input_start, SDL_SCANCODE_1);
+		input.SetMapping(input_select, SDL_SCANCODE_2);
+		input.SetMapping(input_menu, SDL_SCANCODE_M);
+	}
 
-        //bus.QueueDownload("floppy.nib",1,0);
-	blockdevice.MountDisk("floppy.nib",0);
-	//blockdevice.MountDisk("floppy2.nib",2);
-	blockdevice.MountDisk("hd.hdv",1);
+	// Legacy default: floppy.nib in the current directory when nothing is given.
+	if (opt_floppy[0].empty() && opt_floppy[1].empty()) {
+		std::ifstream f("floppy.nib");
+		if (f.good()) opt_floppy[0] = "floppy.nib";
+	}
 
-#ifdef WIN32
-	MSG msg;
-	ZeroMemory(&msg, sizeof(msg));
-	while (msg.message != WM_QUIT)
-	{
-		if (PeekMessage(&msg, NULL, 0U, 0U, PM_REMOVE))
-		{
-			TranslateMessage(&msg);
-			DispatchMessage(&msg);
-			continue;
+	int last_frame = -1;
+	auto check_frame = [&]() -> bool {
+		if (video.count_frame != last_frame) {
+			last_frame = video.count_frame;
+			return on_frame(last_frame);
 		}
-#else
+		return true;
+	};
+
+	if (headless) {
+		auto t0 = std::chrono::steady_clock::now();
+		check_frame();
+		while (true) {
+			for (int s = 0; s < 4096; s++) step();
+			if (!check_frame()) break;
+		}
+		double secs = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+		printf("Ran %d frames in %.1fs (%.1f fps) video x %d..%d y %d..%d\n", last_frame, secs, last_frame / secs, video.stats_xMin, video.stats_xMax, video.stats_yMin, video.stats_yMax);
+		top->final();
+		return 0;
+	}
+
 	bool done = false;
 	while (!done)
 	{
@@ -903,144 +1218,53 @@ int main(int argc, char** argv, char** env) {
 			if (event.type == SDL_QUIT)
 				done = true;
 		}
-#endif
 		video.StartFrame();
-
 		input.Read();
 
-
-		// Draw GUI
-		// --------
 		ImGui::NewFrame();
 
 		// Simulation control window
 		ImGui::Begin(windowTitle_Control);
 		ImGui::SetWindowPos(windowTitle_Control, ImVec2(0, 0), ImGuiCond_Once);
-		ImGui::SetWindowSize(windowTitle_Control, ImVec2(500, 150), ImGuiCond_Once);
+		ImGui::SetWindowSize(windowTitle_Control, ImVec2(500, 170), ImGuiCond_Once);
 		if (ImGui::Button("Reset simulation")) { resetSim(); } ImGui::SameLine();
 		if (ImGui::Button("Start running")) { run_enable = 1; } ImGui::SameLine();
 		if (ImGui::Button("Stop running")) { run_enable = 0; } ImGui::SameLine();
 		ImGui::Checkbox("RUN", &run_enable);
-		//ImGui::PopItemWidth();
 		ImGui::SliderInt("Run batch size", &batchSize, 1, 1750000);
 		if (single_step == 1) { single_step = 0; }
 		if (ImGui::Button("Single Step")) { run_enable = 0; single_step = 1; }
 		ImGui::SameLine();
 		if (multi_step == 1) { multi_step = 0; }
 		if (ImGui::Button("Multi Step")) { run_enable = 0; multi_step = 1; }
-		//ImGui::SameLine();
 		ImGui::SliderInt("Multi step amount", &multi_step_amount, 8, 1024);
-		if (ImGui::Button("Soft Reset")) { fprintf(stderr,"soft reset\n"); soft_reset=1; } ImGui::SameLine();
-
+		if (ImGui::Button("Reset core")) { reset_hold = 2000; } ImGui::SameLine();
+		if (ImGui::Button("Screenshot")) { save_screenshot(video.count_frame); } ImGui::SameLine();
+		ImGui::Checkbox("CPU log", &cpu_log);
+		ImGui::Text("D1: %s  D2: %s", blockdevice.disk_name[0].c_str(), blockdevice.disk_name[1].c_str());
 		ImGui::End();
 
-		// Debug log window
 		console.Draw(windowTitle_DebugLog, &showDebugLog, ImVec2(500, 700));
-		ImGui::SetWindowPos(windowTitle_DebugLog, ImVec2(0, 160), ImGuiCond_Once);
-
-		// Memory debug
-		//ImGui::Begin("PGROM Editor");
-		//mem_edit.DrawContents(top->emu__DOT__system__DOT__pgrom__DOT__mem, 32768, 0);
-		//ImGui::End();
-		//ImGui::Begin("CHROM Editor");
-		//mem_edit.DrawContents(top->emu__DOT__system__DOT__chrom__DOT__mem, 2048, 0);
-		//ImGui::End();
-		//ImGui::Begin("WKRAM Editor");
-		//mem_edit.DrawContents(&top->emu__DOT__system__DOT__wkram__DOT__mem, 16384, 0);
-		//ImGui::End();
-		//ImGui::Begin("CHRAM Editor");
-		//mem_edit.DrawContents(&top->emu__DOT__system__DOT__chram__DOT__mem, 2048, 0);
-		//ImGui::End();
-		//ImGui::Begin("FGCOLRAM Editor");
-		//mem_edit.DrawContents(&top->emu__DOT__system__DOT__fgcolram__DOT__mem, 2048, 0);
-		//ImGui::End();
-		//ImGui::Begin("BGCOLRAM Editor");
-		//mem_edit.DrawContents(&top->emu__DOT__system__DOT__bgcolram__DOT__mem, 2048, 0);
-		//ImGui::End();
-		//ImGui::Begin("Sprite RAM");
-		//mem_edit.DrawContents(&top->emu__DOT__system__DOT__spriteram__DOT__mem, 96, 0);
-		//ImGui::End();
-		//ImGui::Begin("Sprite Linebuffer RAM");
-		//mem_edit.DrawContents(&top->emu__DOT__system__DOT__spritelbram__DOT__mem, 1024, 0);
-		//ImGui::End();
-		//ImGui::Begin("Sprite Collision Buffer RAM A");
-		//mem_edit.DrawContents(&top->emu__DOT__system__DOT__comet__DOT__spritecollisionbufferram_a__DOT__mem, 512, 0);
-		//ImGui::End();
-		//ImGui::Begin("Sprite Collision Buffer RAM B");
-		//mem_edit.DrawContents(&top->emu__DOT__system__DOT__comet__DOT__spritecollisionbufferram_b__DOT__mem, 512, 0);
-		//ImGui::End();
-		//ImGui::Begin("Sprite Collision RAM ");
-		//mem_edit.DrawContents(&top->emu__DOT__system__DOT__spritecollisionram__DOT__mem, 32, 0);
-		//ImGui::End();
-		//ImGui::Begin("Sprite Debug RAM");
-		//mem_edit.DrawContents(&top->emu__DOT__system__DOT__spritedebugram__DOT__mem, 128000, 0);
-		//ImGui::End();
-		//ImGui::Begin("Palette ROM");
-		//mem_edit.DrawContents(&top->emu__DOT__system__DOT__palrom__DOT__mem, 64, 0);
-		//ImGui::End();
-		//ImGui::Begin("Sprite ROM");
-		//mem_edit.DrawContents(&top->emu__DOT__system__DOT__spriterom__DOT__mem, 2048, 0);
-		//ImGui::End();
-		//ImGui::Begin("Tilemap ROM");
-		//mem_edit.DrawContents(&top->emu__DOT__system__DOT__tilemaprom__DOT__mem, 8192, 0);
-		//ImGui::End();
-		//ImGui::Begin("Tilemap RAM");
-		//	mem_edit.DrawContents(&top->emu__DOT__system__DOT__tilemapram__DOT__mem, 768, 0);
-		//ImGui::End();
-		//ImGui::Begin("Sound ROM");
-		//mem_edit.DrawContents(&top->emu__DOT__system__DOT__soundrom__DOT__mem, 64000, 0);
-		//ImGui::End();
+		ImGui::SetWindowPos(windowTitle_DebugLog, ImVec2(0, 180), ImGuiCond_Once);
 
 		int windowX = 550;
 		int windowWidth = (VGA_WIDTH * VGA_SCALE_X) + 24;
 		int windowHeight = (VGA_HEIGHT * VGA_SCALE_Y) + 90;
 
-		// Video window
 		ImGui::Begin(windowTitle_Video);
 		ImGui::SetWindowPos(windowTitle_Video, ImVec2(windowX, 0), ImGuiCond_Once);
 		ImGui::SetWindowSize(windowTitle_Video, ImVec2(windowWidth, windowHeight), ImGuiCond_Once);
-
 		ImGui::SliderFloat("Zoom", &vga_scale, 1, 8); ImGui::SameLine();
 		ImGui::SliderInt("Rotate", &video.output_rotate, -1, 1); ImGui::SameLine();
 		ImGui::Checkbox("Flip V", &video.output_vflip);
 		ImGui::Text("main_time: %ld frame_count: %d sim FPS: %f", main_time, video.count_frame, video.stats_fps);
-		//ImGui::Text("pixel: %06d line: %03d", video.count_pixel, video.count_line);
-
-		// Draw VGA output
 		ImGui::Image(video.texture_id, ImVec2(video.output_width * VGA_SCALE_X, video.output_height * VGA_SCALE_Y));
 		ImGui::End();
 
-  if (ImGuiFileDialog::Instance()->Display("ChooseFileDlgKey"))
-  {
-    // action if OK
-    if (ImGuiFileDialog::Instance()->IsOk())
-    {
-      std::string filePathName = ImGuiFileDialog::Instance()->GetFilePathName();
-      std::string filePath = ImGuiFileDialog::Instance()->GetCurrentPath();
-      // action
-fprintf(stderr,"filePathName: %s\n",filePathName.c_str());
-fprintf(stderr,"filePath: %s\n",filePath.c_str());
-     bus.QueueDownload(filePathName, 1,0);
-    }
-   
-    // close
-    ImGuiFileDialog::Instance()->Close();
-  }
-
-
 #ifndef DISABLE_AUDIO
-
 		ImGui::Begin(windowTitle_Audio);
 		ImGui::SetWindowPos(windowTitle_Audio, ImVec2(windowX, windowHeight), ImGuiCond_Once);
 		ImGui::SetWindowSize(windowTitle_Audio, ImVec2(windowWidth, 250), ImGuiCond_Once);
-
-		
-		//float vol_l = ((signed short)(top->AUDIO_L) / 256.0f) / 256.0f;
-		//float vol_r = ((signed short)(top->AUDIO_R) / 256.0f) / 256.0f;
-		//ImGui::ProgressBar(vol_l + 0.5f, ImVec2(200, 16), 0); ImGui::SameLine();
-		//ImGui::ProgressBar(vol_r + 0.5f, ImVec2(200, 16), 0);
-
-		int ticksPerSec = (24000000 / 60);
 		if (run_enable) {
 			audio.CollectDebug((signed short)top->AUDIO_L, (signed short)top->AUDIO_R);
 		}
@@ -1052,83 +1276,35 @@ fprintf(stderr,"filePath: %s\n",filePath.c_str());
 			ImPlot::PlotStairs("", audio.debug_positions, audio.debug_wave_l, audio.debug_max_samples, audio.debug_pos);
 			ImPlot::EndPlot();
 		}
-		ImGui::SameLine();
-		if (ImPlot::BeginPlot("Audio - R", ImVec2(channelWidth, 220), ImPlotFlags_NoLegend | ImPlotFlags_NoMenus | ImPlotFlags_NoTitle)) {
-			ImPlot::SetupAxes("T", "A", ImPlotAxisFlags_NoLabel | ImPlotAxisFlags_NoTickMarks, ImPlotAxisFlags_AutoFit | ImPlotAxisFlags_NoLabel | ImPlotAxisFlags_NoTickMarks);
-			ImPlot::SetupAxesLimits(0, 1, -1, 1, ImPlotCond_Once);
-			ImPlot::PlotStairs("", audio.debug_positions, audio.debug_wave_r, audio.debug_max_samples, audio.debug_pos);
-			ImPlot::EndPlot();
-		}
 		ImPlot::DestroyContext();
 		ImGui::End();
 #endif
 
 		video.UpdateTexture();
 
-
-		// Pass inputs to sim
-
+		// Keyboard from the window, joystick from the window unless injected
+		if (joy_events.empty()) {
+			joy_mask = 0;
+			for (int i = 0; i < input.inputCount; i++)
+				if (input.inputs[i]) joy_mask |= (1 << i);
+		}
 		top->menu = input.inputs[input_menu];
 
-		top->joystick_0 = 0;
-		for (int i = 0; i < input.inputCount; i++)
-		{
-			if (input.inputs[i]) { top->joystick_0 |= (1 << i); }
-		}
-		top->joystick_1 = top->joystick_0;
-
-		/*top->joystick_analog_0 += 1;
-		top->joystick_analog_0 -= 256;*/
-		//top->paddle_0 += 1;
-		//if (input.inputs[0] || input.inputs[1]) {
-		//	spinner_toggle = !spinner_toggle;
-		//	top->spinner_0 = (input.inputs[0]) ? 16 : -16;
-		//	for (char b = 8; b < 16; b++) {
-		//		top->spinner_0 &= ~(1UL << b);
-		//	}
-		//	if (spinner_toggle) { top->spinner_0 |= 1UL << 8; }
-		//}
-
-		mouse_buttons = 0;
-		mouse_x = 0;
-		mouse_y = 0;
-		if (input.inputs[input_left]) { mouse_x = -2; }
-		if (input.inputs[input_right]) { mouse_x = 2; }
-		if (input.inputs[input_up]) { mouse_y = 2; }
-		if (input.inputs[input_down]) { mouse_y = -2; }
-
-		if (input.inputs[input_a]) { mouse_buttons |= (1UL << 0); }
-		if (input.inputs[input_b]) { mouse_buttons |= (1UL << 1); }
-
-		unsigned long mouse_temp = mouse_buttons;
-		mouse_temp += (mouse_x << 8);
-		mouse_temp += (mouse_y << 16);
-		if (mouse_clock) { mouse_temp |= (1UL << 24); }
-		mouse_clock = !mouse_clock;
-
-		top->ps2_mouse = mouse_temp;
-		top->ps2_mouse_ext = mouse_x + (mouse_buttons << 8);
-
-		// Run simulation
 		if (run_enable) {
-			for (int step = 0; step < batchSize; step++) { verilate(); }
+			for (int s = 0; s < batchSize; s++) { step(); if (!check_frame()) { done = true; break; } }
 		}
 		else {
-			if (single_step) { verilate(); }
-			if (multi_step) {
-				for (int step = 0; step < multi_step_amount; step++) { verilate(); }
-			}
+			if (single_step) { step(); }
+			if (multi_step) { for (int s = 0; s < multi_step_amount; s++) step(); }
+			check_frame();
 		}
 	}
 
-	// Clean up before exit
-	// --------------------
-
 #ifndef DISABLE_AUDIO
 	audio.CleanUp();
-#endif 
+#endif
 	video.CleanUp();
 	input.CleanUp();
-
+	print_stats();
 	return 0;
 }

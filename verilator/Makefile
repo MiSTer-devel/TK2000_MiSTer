@@ -50,7 +50,7 @@ endif
 CFLAGS += $(CC_OPT) $(CC_DEFINE) -Iimgui 
 LDFLAGS = $(LIBS)
 EXE = ./obj_dir/Vemu
-V_OPT = -O3 --x-assign fast --x-initial fast --noassert 
+V_OPT = -O3 --x-assign fast --x-initial fast --noassert -Wno-fatal 
 CC_OPT = -O3
 
 V_SRC = \
@@ -63,6 +63,8 @@ V_SRC = \
 	$(RTL)/peripheral/disk_ii.v \
 	$(RTL)/peripheral/drive_ii.v \
 	$(RTL)/peripheral/floppy_track.sv \
+	$(RTL)/ct2_player.sv \
+	$(RTL)/tape_deck.sv \
 	$(RTL)/rom.v \
 	$(RTL)/bram.sv \
 	$(RTL)/video/video_generator.sv \
@@ -72,7 +74,7 @@ V_SRC = \
 
 C_SRC = \
 	sim_main.cpp  \
-	sim/sim_bus.cpp sim/sim_blkdevice.cpp sim/sim_clock.cpp sim/sim_console.cpp sim/sim_video.cpp sim/sim_console.cpp sim/sim_input.cpp  sim/sim_audio.cpp \
+	sim/sim_bus.cpp sim/sim_blkdevice.cpp sim/a2_nib_codec.cpp sim/sim_clock.cpp sim/sim_console.cpp sim/sim_video.cpp sim/sim_console.cpp sim/sim_input.cpp  sim/sim_audio.cpp \
 	sim/imgui/imgui_impl_sdl.cpp sim/imgui/imgui_impl_opengl2.cpp sim/imgui/imgui_draw.cpp sim/imgui/imgui_widgets.cpp sim/imgui/imgui_tables.cpp sim/imgui/imgui.cpp sim/imgui/ImGuiFileDialog.cpp sim/imgui/implot.cpp sim/imgui/implot_items.cpp
 
 VOUT = obj_dir/Vemu.cpp
@@ -91,3 +93,6 @@ fast:
 
 clean:
 	rm -f obj_dir/*
+
+nibtool: tools/nibtool.cpp sim/a2_nib_codec.cpp sim/a2_nib_codec.h
+	$(CXX) -O2 -Isim -o tools/nibtool tools/nibtool.cpp sim/a2_nib_codec.cpp

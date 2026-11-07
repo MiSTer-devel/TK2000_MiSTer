@@ -92,6 +92,15 @@ module emu (
 	input [24:0]		ioctl_addr,
 	input [7:0]		ioctl_dout,
 	input [7:0]		ioctl_index,
+	input			disk_rom_off,
+	input			tape_rewind,
+	input			tape_play_toggle,
+	input			tape_normal_speed,   // OSD Tape speed = Normal
+	input			tape_overlay_off,    // OSD Tape overlay = Off
+	output			turbo_o,
+	output			tape_playing_o,
+	output			tape_loaded_o,
+	output			cas_o_o,
 	output reg		ioctl_wait=1'b0,
 
 	output [31:0] 		sd_lba[3],
@@ -146,7 +155,7 @@ always @(posedge CLK_VIDEO) begin
 end
 wire [15:0] hdd_sector;
 
-assign sd_lba[1] = {16'b0,hdd_sector};
+// sd_lba[1] is driven by floppy_track_2 (was also driven here by a stale HDD assign)
 
 assign CE_PIXEL=ce_pix;
 wire led;
@@ -285,7 +294,7 @@ wire rd_pulse_s;
 tk2000 tk2000 (
     .clock_14_i(clock_14_s),
     .reset_i(reset_s),
-    .CPU_WAIT(cpu_wait_fdd),
+    .CPU_WAIT(1'b0),   // match TK2000.sv (cpu_wait_fdd was undriven)
     // RAM
     .ram_addr_o(ram_addr_s),
     .ram_data_to_o(ram_data_to_s),
@@ -314,9 +323,16 @@ tk2000 tk2000 (
     .video_vbl_o(video_vbl_s),
     .video_ld194_o(video_ld194_s),
     // Cassete
-    .cas_i(1'b0),
+    .cas_i(tape_level),
     .cas_o(cas_o_s),
     .cas_motor_o(/* open */),
+    .cpu_ce_o(cpu_ce_s),
+    .cpu_sync_o(cpu_sync_s),
+    .cpu_addr_o(cpu_addr16_s),
+    .turbo_i(tape_turbo_req & ~(fd_disk_1 | fd_disk_2)),
+    .turbo_o(turbo_s),
+    .video_ram_addr_o(video_ram_addr_s),
+    .video_ram_data_i(video_ram_data_s),
     //cas_motor_s,
     // LPT
     .lpt_stb_o(/* open */),
@@ -332,7 +348,7 @@ tk2000 tk2000 (
     .read_write_o(per_we_s),
     .irq_n_i(1'b1),
     .nmi_n_i(1'b1),
-    .dis_rom_i(1'b1),
+    .dis_rom_i(~disk_rom_off),   // OSD 'Disk Rom' (TK2000.sv: ~status[10])
     // 1 enable peripheral
     .io_select_n_o(per_iosel_n_s),
     .dev_select_n_o(per_devsel_n_s),
@@ -342,6 +358,52 @@ tk2000 tk2000 (
 	 
 );
 
+
+// ---------------------------------------------------------------- cassette
+wire        cpu_ce_s, cpu_sync_s, turbo_s;
+wire [15:0] cpu_addr16_s;
+wire [15:0] video_ram_addr_s;
+wire  [7:0] video_ram_data_s;
+wire        tape_level, tape_playing, tape_loaded, tape_turbo_req;
+wire [23:0] rgb_overlay;
+wire        tape_load = ioctl_download && (ioctl_index[5:0] == 6'd2);
+reg         old_rewind, old_play;
+always @(posedge clk_sys) begin
+	old_rewind <= tape_rewind;
+	old_play   <= tape_play_toggle;
+end
+
+tape_deck tape
+(
+	.clk(clk_sys),
+	.cpu_ce(cpu_ce_s),
+	.cpu_sync(cpu_sync_s),
+	.cpu_addr(cpu_addr16_s),
+	.load(tape_load),
+	.load_wr(ioctl_wr),
+	.load_addr(ioctl_addr),
+	.load_data(ioctl_dout),
+	.rewind(tape_rewind & ~old_rewind),
+	.play_toggle(tape_play_toggle & ~old_play),
+	.speed_7x(~tape_normal_speed),
+	.overlay_en(~tape_overlay_off),
+	.ps2_key(ps2_key),
+	.turbo_active(turbo_s),
+	.cas_level(tape_level),
+	.playing(tape_playing),
+	.loaded(tape_loaded),
+	.turbo_req(tape_turbo_req),
+	.info_req(),
+	.info(),
+	.hblank(VGA_HB),
+	.vblank(VGA_VB),
+	.rgb_in({video_r_s, video_g_s, video_b_s}),
+	.rgb_out(rgb_overlay)
+);
+assign turbo_o = turbo_s;
+assign tape_playing_o = tape_playing;
+assign tape_loaded_o = tape_loaded;
+assign cas_o_o = cas_o_s;
 
 keyboard #(.clkfreq_g(14000)) kb (
   	.clock_i	(clk_sys), //  --clock_28_s,
@@ -370,11 +432,9 @@ wire joy1_p9_i= ~joystick_0[5];
     if((kbd_rows_s[6] == 1'b1 && joy1_up_i == 1'b0) || (kbd_rows_s[5] == 1'b1 && joy1_down_i == 1'b0) || (kbd_rows_s[4] == 1'b1 && joy1_right_i == 1'b0) || (kbd_rows_s[3] == 1'b1 && joy1_left_i == 1'b0)) begin
       kbd_joy_s <= kbd_joy_s | 6'b000001;
     end
-    if((kbd_rows_s[7] == 1'b1 && joy1_p6_i == 1'b0) /*|| (kbd_rows_s[6] == 1'b1 && joy1_p9_i == 1'b0)*/) begin
+    // same button mapping as TK2000.sv
+    if((kbd_rows_s[7] == 1'b1 && joy1_p6_i == 1'b0) || (kbd_rows_s[6] == 1'b1 && joy1_p9_i == 1'b0)) begin
       kbd_joy_s <= kbd_joy_s | 6'b010000;
-    end
-    if( (kbd_rows_s[1] == 1'b1 && joy1_p9_i == 1'b0)) begin
-      kbd_joy_s <= kbd_joy_s | 6'b100000;
     end
  
  //generate a slower clock for the keyboard
@@ -426,11 +486,11 @@ bram #(8,16) ram
         .data_a(ram_data),
         .q_a(ram_data_from_s),
         
-        .clock_b(clk_sys),
-        .address_b(),
-        .wren_b(),
-        .data_b(),
-        .q_b()
+        .clock_b(clock_28_s),            // video reads on port B
+        .address_b(video_ram_addr_s),
+        .wren_b(1'b0),
+        .data_b(8'd0),
+        .q_b(video_ram_data_s)
 );
         
 
@@ -479,9 +539,9 @@ vga_controller_appleii vga (
 	
 //	assign VGA_HS	= video_hsync_n_s;
 //	assign VGA_VS	= video_vsync_n_s;
-	assign VGA_R	= video_r_s;
-	assign VGA_G	= video_g_s;
-	assign VGA_B	= video_b_s;	 
+	assign VGA_R	= rgb_overlay[23:16];
+	assign VGA_G	= rgb_overlay[15:8];
+	assign VGA_B	= rgb_overlay[7:0];	 
    //assign VGA_DE =  ~(VBlank | HBlank);
 
 
@@ -587,7 +647,7 @@ floppy_track floppy_track_1
 	.track (TRACK1),
 	.busy  (TRACK1_RAM_BUSY),
    .change(DISK_CHANGE[0]),
-   .mount (img_mounted[0]),
+   .mount (disk_mount[0]),   // match TK2000.sv (was the raw img_mounted pulse)
    .ready  (DISK_READY[0]),
    .active (fd_disk_1),
 

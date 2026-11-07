@@ -45,8 +45,14 @@ module floppy_track
 	output  [7:0] ram_do,
 	input   [7:0] ram_di,
 	input         ram_we,
-	output reg    busy
+	// busy also covers the gap between the head moving to a new track and the
+	// load starting, so the drive never serves a buffer that doesn't match 'track'.
+	output        busy
 );
+
+reg busy_r = 0;
+reg [5:0] cur_track;
+assign busy = busy_r | (ready && (cur_track != track));
 
 assign sd_lba = lba;
 
@@ -55,7 +61,6 @@ reg   [3:0] rel_lba;
 
 always @(posedge clk) begin
 	reg old_ack;
-	reg [5:0] cur_track ;
 	reg old_change;
 	reg saving ;
 	reg dirty ;
@@ -70,7 +75,7 @@ always @(posedge clk) begin
 	if(~old_change & change) begin
 		ready <= mount;
 		cur_track <= 'b111111;
-		busy  <= 0;
+		busy_r <= 0;
 		sd_rd <= 0;
 		sd_wr <= 0;
 		saving<= 0;
@@ -79,7 +84,7 @@ always @(posedge clk) begin
 	else
 	if(reset) begin
 		cur_track <= 'b111111;
-		busy  <= 0;
+		busy_r <= 0;
 		sd_rd <= 0;
 		sd_wr <= 0;
 		saving<= 0;
@@ -87,7 +92,7 @@ always @(posedge clk) begin
 	end
 	else
 
-	if(busy) begin
+	if(busy_r) begin
 		if(old_ack && ~sd_ack) begin
 			if(rel_lba != 4'd12) begin
 				lba <= lba + 1'd1;
@@ -105,7 +110,7 @@ always @(posedge clk) begin
 			end
 			else
 			begin
-				busy <= 0;
+				busy_r <= 0;
 				dirty <= 0;
 			end
 		end
@@ -117,7 +122,7 @@ always @(posedge clk) begin
 			lba <= cur_track * 8'd13;
 			rel_lba <= 0;
 			sd_wr <= 1;
-			busy <= 1;
+			busy_r <= 1;
 		end
 		else
 		begin
@@ -126,7 +131,7 @@ always @(posedge clk) begin
 			rel_lba <= 0;
 			lba <= track * 8'd13; //track size = 1a00h
 			sd_rd <= 1;
-			busy <= 1;
+			busy_r <= 1;
 			dirty <= 0;
 		end
 end

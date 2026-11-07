@@ -162,7 +162,12 @@ module drive_ii(CLK_14M, CLK_2M, PHASE_ZERO, RESET, DISK_READY, D_IN, D_OUT, DIS
                
                if (byte_delay == 0)
                begin
-                  data_reg <= TRACK_DO;
+                  // While the track buffer is being (re)loaded from SD it holds a mix of
+                  // the old and new track; presenting it lets loaders that don't check the
+                  // address-field track number (P5 boot ROM / COMPATIBOOT) read sectors
+                  // from the wrong track. Deliver no nibble (bit 7 clear) until it's ready,
+                  // like a head that is still settling.
+                  data_reg <= TRACK_BUSY ? 8'h00 : TRACK_DO;
                   if (track_byte_addr == 13'h19FF)
                      track_byte_addr <= {13{1'b0}};
                   else

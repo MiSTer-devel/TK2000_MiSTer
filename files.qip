@@ -3,12 +3,13 @@ set_global_assignment -name VERILOG_FILE rtl/tk2000.v
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/timing_generator.sv
 set_global_assignment -name VHDL_FILE rtl/cpu/cpu6502.vhd
 #set_global_assignment -name VHDL_FILE rtl/RAM/dpram.vhd
-set_global_assignment -name QIP_FILE rtl/ROM/tk2000_rom.qip
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/keyboard.sv
 set_global_assignment -name VHDL_FILE rtl/peripheral/disk_ii_rom.vhd
 set_global_assignment -name VERILOG_FILE rtl/peripheral/disk_ii.v
 set_global_assignment -name VERILOG_FILE rtl/peripheral/drive_ii.v
 set_global_assignment -name VERILOG_FILE rtl/peripheral/floppy_track.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/ct2_player.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/tape_deck.sv
 set_global_assignment -name VERILOG_FILE rtl/rom.v
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/bram.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/video/video_generator.sv
